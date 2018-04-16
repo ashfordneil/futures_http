@@ -1,0 +1,9 @@
+[package]
+name = "future_http"
+version = "0.1.0"
+authors = ["Neil Ashford <ashfordneil0@gmail.com>"]
+
+[dependencies]
+futures = "0.2.0"
+httparse = "1.2.4"
+http = "0.1.5"
