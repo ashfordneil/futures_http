@@ -9,13 +9,14 @@
 //! used must either be the same, or have the same values in it.
 
 use std::fmt::{self, Debug, Formatter};
+use std::iter;
 use std::mem;
 use std::slice;
 use std::str;
 
-use httparse::{Header as RefHeader, Request as RefRequest};
+use httparse::{Header as RefHeader, Request as RefRequest, EMPTY_HEADER};
 
-const MAX_HEADERS: usize = 100;
+pub const MAX_HEADERS: usize = 100;
 
 /// An unsafe serialization of a (partially) parsed request.
 #[derive(Copy, Clone)]
@@ -29,19 +30,27 @@ pub struct Request {
 
 impl Debug for Request {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Request {{ method: {:?}, path: {:?}, version: {:?}, headers: [",
-            self.method, self.path, self.version
-        )?;
-        for i in 0..(self.header_count - 1) {
-            write!(f, "{:?}, ", self.headers[i])?;
-        }
-        write!(f, "{:?}] }}", self.headers[self.header_count - 1])
+        f.debug_struct("Request")
+            .field("method", &self.method)
+            .field("path", &self.path)
+            .field("version", &self.version)
+            .field("headers", &&self.headers[..self.header_count])
+            .finish()
     }
 }
 
 impl Request {
+    /// Create a new, empty, serialized request.
+    pub fn new() -> Self {
+        Request {
+            method: None,
+            path: None,
+            version: None,
+            headers: unsafe { mem::uninitialized() },
+            header_count: 0,
+        }
+    }
+
     /// Serializes a sliced request into an indexed request.
     pub fn from_ref<'headers, 'buf: 'headers>(
         buffer: &'buf [u8],
@@ -82,7 +91,7 @@ impl Request {
         buffer: &'buf [u8],
         headers_buffer: &'headers mut [RefHeader<'buf>],
     ) -> RefRequest<'headers, 'buf> {
-        assert!(self.header_count > headers_buffer.len());
+        assert!(self.header_count < headers_buffer.len());
 
         let buffer_len = buffer.len();
         let buffer = buffer.as_ptr() as isize;
@@ -103,9 +112,11 @@ impl Request {
             self.headers
                 .iter()
                 .take(self.header_count)
+                .map(|header| header.as_ref(buffer, buffer_len))
+                .chain(iter::repeat(EMPTY_HEADER))
                 .zip(headers_buffer.iter_mut())
-                .for_each(|(header, target)| *target = header.as_ref(buffer, buffer_len));
-            &mut headers_buffer[..self.header_count]
+                .for_each(|(header, target)| *target = header);
+            headers_buffer
         };
 
         RefRequest {
@@ -115,6 +126,7 @@ impl Request {
             headers,
         }
     }
+
 }
 
 #[derive(Copy, Clone, Debug)]
