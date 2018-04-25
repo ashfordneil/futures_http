@@ -140,27 +140,27 @@ impl<A: AsyncRead> Future for ReadRequest<A> {
 #[derive(Debug, Fail)]
 pub enum Error {
     #[fail(display = "{}", _0)]
-    IoError(#[cause] io::Error),
+    Io(#[cause] io::Error),
     #[fail(display = "{}", _0)]
-    HttpParseError(#[cause] httparse::Error),
+    Parse(#[cause] httparse::Error),
     #[fail(display = "{}", _0)]
-    HttpLogicError(#[cause] http::Error),
+    Logic(#[cause] http::Error),
 }
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
-        Error::IoError(e)
+        Error::Io(e)
     }
 }
 
 impl From<httparse::Error> for Error {
     fn from(e: httparse::Error) -> Self {
-        Error::HttpParseError(e)
+        Error::Parse(e)
     }
 }
 
 impl From<http::Error> for Error {
     fn from(e: http::Error) -> Self {
-        Error::HttpLogicError(e)
+        Error::Logic(e)
     }
 }
