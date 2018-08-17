@@ -4,9 +4,12 @@ version = "0.1.0"
 authors = ["Neil Ashford <ashfordneil0@gmail.com>"]
 
 [dependencies]
-futures = "0.2.0"
+futures-preview = "0.3.0-alpha.3"
 httparse = "1.2.4"
 http = "0.1.5"
 failure = "0.1.1"
 failure_derive = "0.1.1"
 bytes = "0.4.6"
+
+[dev_dependencies]
+toykio = { git = "https://github.com/polachok/toykio", branch = "futures-0.3" }

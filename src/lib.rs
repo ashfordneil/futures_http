@@ -1,3 +1,7 @@
+#![feature(arbitrary_self_types)]
+#![feature(futures_api)]
+#![feature(pin)]
+
 extern crate bytes;
 extern crate failure;
 #[macro_use]
@@ -9,12 +13,14 @@ extern crate httparse;
 mod buffer;
 
 use std::io;
+use std::mem::PinMut;
+use std::marker::Unpin;
 
 use bytes::BytesMut;
 
-use futures::{Async, Future};
+use futures::future::Future;
 use futures::io::AsyncRead;
-use futures::task::Context;
+use futures::task::{Context, Poll};
 
 use http::Version;
 
@@ -30,45 +36,41 @@ fn http_version(version: u8) -> Version {
     }
 }
 
+/// A future that will resolve to a parsed http request header.
 #[derive(Debug)]
-struct ReadRequestState<A: AsyncRead> {
-    read: A,
-    buffer: BytesMut,
-    request: buffer::Request,
+pub struct ReadRequest<'a, A: 'a + AsyncRead + Unpin> {
+    read: &'a mut A,
+    buffer: &'a mut BytesMut,
+    request: Option<buffer::Request>,
 }
 
-/// A future that will resolve to a read and parsed http request.
-#[derive(Debug)]
-pub struct ReadRequest<A: AsyncRead> {
-    data: Option<ReadRequestState<A>>,
-}
-
-impl<A: AsyncRead> ReadRequest<A> {
-    pub fn new(reader: A, buffer: Option<BytesMut>) -> Self {
+impl<'a, A: 'a + AsyncRead + Unpin> ReadRequest<'a, A> {
+    /// Create a new HTTP request header parser - given both the reader to read from and a buffer
+    /// to store excess bytes in
+    pub fn new(reader: &'a mut A, buffer: &'a mut BytesMut) -> Self {
         ReadRequest {
-            data: Some(ReadRequestState {
-                read: reader,
-                buffer: buffer.unwrap_or(BytesMut::new()),
-                request: buffer::Request::new(),
-            }),
+            read: reader,
+            buffer,
+            request: Some(buffer::Request::new()),
         }
     }
 
-    fn attempt_parse(&mut self, cx: &mut Context) -> Result<Async<BytesMut>, Error> {
-        let &mut ReadRequestState {
+    fn attempt_parse(self: PinMut<Self>, cx: &mut Context) -> Poll<Result<BytesMut, Error>> {
+        let &mut ReadRequest {
             ref mut read,
             ref mut buffer,
             ref mut request,
-        } = self.data.as_mut().expect("Called poll on completed future");
+        } = PinMut::get_mut(self);
+        let request = request.as_mut().expect("calling poll on completed future");
 
         // do the actual read
         let mut tmp = [0; BUFFER_SIZE];
         match read.poll_read(cx, &mut tmp)? {
-            Async::Ready(count) => {
+            Poll::Ready(count) => {
                 buffer.extend_from_slice(&tmp[..count]);
             }
-            Async::Pending => {
-                return Ok(Async::Pending);
+            Poll::Pending => {
+                return Poll::Pending;
             }
         };
 
@@ -82,8 +84,8 @@ impl<A: AsyncRead> ReadRequest<A> {
         };
 
         match status {
-            Status::Complete(length) => Ok(Async::Ready(buffer.split_off(length))),
-            Status::Partial => Ok(Async::Pending),
+            Status::Complete(length) => Poll::Ready(Ok(buffer.split_to(length))),
+            Status::Partial => Poll::Pending,
         }
     }
 
@@ -110,39 +112,36 @@ impl<A: AsyncRead> ReadRequest<A> {
     }
 }
 
-impl<A: AsyncRead> Future for ReadRequest<A> {
-    type Item = (A, BytesMut, http::request::Parts);
-    type Error = Error;
+impl<'a, A: 'a + AsyncRead + Unpin> Future for ReadRequest<'a, A> {
+    type Output = Result<http::request::Parts, Error>;
 
-    fn poll(&mut self, cx: &mut Context) -> Result<Async<Self::Item>, Self::Error> {
-        let attempt = self.attempt_parse(cx)?;
-        println!("segcheck {:?}", attempt);
+    fn poll(mut self: PinMut<Self>, cx: &mut Context) -> Poll<Self::Output> {
+        let attempt = Self::attempt_parse(self.reborrow(), cx)?;
         let output_buffer = match attempt {
-            Async::Ready(buffer) => buffer,
-            Async::Pending => return Ok(Async::Pending),
+            Poll::Ready(buffer) => buffer,
+            Poll::Pending => return Poll::Pending,
         };
-        println!("segcheck");
 
-        let ReadRequestState {
-            read,
-            buffer,
-            request,
-        } = self.data.take().unwrap();
+        let request = PinMut::get_mut(self).request.take().unwrap();
 
         let mut headers = [EMPTY_HEADER; buffer::MAX_HEADERS];
-        let raw_request = unsafe { request.as_ref(&buffer, &mut headers[..]) };
+        let raw_request = unsafe { request.as_ref(&output_buffer, &mut headers[..]) };
         let output_request = Self::attempt_type(raw_request)?;
 
-        Ok(Async::Ready((read, output_buffer, output_request)))
+        Poll::Ready(Ok(output_request))
     }
 }
 
+/// An error raised while attempting to parse a HTTP request from a readable object.
 #[derive(Debug, Fail)]
 pub enum Error {
+    /// An error in underlying IO operations.
     #[fail(display = "{}", _0)]
     Io(#[cause] io::Error),
+    /// An error in parsing the HTTP request sent over the network
     #[fail(display = "{}", _0)]
     Parse(#[cause] httparse::Error),
+    /// An error in interpreting a parsed HTTP request as a strongly typed HTTP header set
     #[fail(display = "{}", _0)]
     Logic(#[cause] http::Error),
 }
