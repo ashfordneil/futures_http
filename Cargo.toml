@@ -13,3 +13,4 @@ bytes = "0.4.6"
 
 [dev_dependencies]
 toykio = { git = "https://github.com/polachok/toykio", branch = "futures-0.3" }
+pin-utils = "0.1.0-alpha.1"
